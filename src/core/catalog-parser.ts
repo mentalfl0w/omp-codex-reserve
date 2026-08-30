@@ -233,12 +233,38 @@ function parseModel(entry: unknown, baseUrl: string): ParsedCodexModel | null {
   return { remote, model };
 }
 
-/** Parse only authoritative remote metadata; incomplete rows fail closed. */
-export function parseCodexCatalog(catalog: RemoteCodexCatalog): ParsedCodexCatalog {
+export interface ParseCodexCatalogOptions {
+  /**
+   * Require every identified visible/reserve row to be valid. This is used
+   * when the result will replace a provider catalog; ordinary reserve-only
+   * reads remain tolerant of unrelated malformed rows.
+   */
+  requireComplete?: boolean;
+}
+
+function mustParseRow(entry: unknown): boolean {
+  if (!isRecord(entry)) return false;
+  const modelId = stringField(entry, MODEL_ID_KEYS)?.trim();
+  if (!modelId) return false;
+  const visibility = stringField(entry, ["visibility"])?.trim().toLowerCase();
+  return visibility !== "hide" && visibility !== "hidden" || modelId === RESERVE_MODEL_ID;
+}
+
+/** Parse remote metadata without inventing missing model capabilities. */
+export function parseCodexCatalog(
+  catalog: RemoteCodexCatalog,
+  options: ParseCodexCatalogOptions = {},
+): ParsedCodexCatalog {
   const parsed: ParsedCodexModel[] = [];
   const seen = new Set<string>();
   for (const entry of catalog.models) {
-    const item = parseModel(entry, catalog.baseUrl);
+    let item: ParsedCodexModel | null;
+    try {
+      item = parseModel(entry, catalog.baseUrl);
+    } catch (error) {
+      if (options.requireComplete && mustParseRow(entry)) throw error;
+      continue;
+    }
     if (!item || seen.has(item.model.id)) continue;
     seen.add(item.model.id);
     parsed.push(item);

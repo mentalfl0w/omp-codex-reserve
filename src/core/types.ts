@@ -107,21 +107,3 @@ export interface CatalogFetchResult {
   catalog: RemoteCodexCatalog;
   responseStatus: number;
 }
-
-export interface MetadataChange {
-  field: string;
-  previous: unknown;
-  current: unknown;
-}
-
-export interface ReserveStatus {
-  provider: typeof CODEX_PROVIDER_ID;
-  modelId: typeof RESERVE_MODEL_ID;
-  detected: boolean;
-  registryModel: string | undefined;
-  visibility: string | undefined;
-  metadataSource: "remote" | "cache" | "unknown";
-  lastRefreshAt: number | undefined;
-  lastError: string | undefined;
-  changes: readonly MetadataChange[];
-}

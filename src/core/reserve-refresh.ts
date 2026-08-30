@@ -1,50 +1,67 @@
 import { fetchCodexCatalog } from "./catalog-client.ts";
 import { parseCodexCatalog } from "./catalog-parser.ts";
-import { safeErrorMessage } from "./errors.ts";
+import { CatalogUnavailableError, safeErrorMessage } from "./errors.ts";
 import { logRuntimeEvent, type RuntimeLoggerLike } from "./runtime-log.ts";
-import { ReserveState } from "./state.ts";
-import type { CatalogFetchRequest, CommonModelDefinition, FetchFn } from "./types.ts";
+import { RESERVE_MODEL_ID, type CatalogFetchRequest, type CommonModelDefinition, type FetchFn, type ParsedCodexCatalog } from "./types.ts";
 
 export interface ReserveRefreshOptions {
   host: "omp" | "pi";
   accessToken: string;
   accountId?: string;
+  signal?: AbortSignal;
   fetchFn?: FetchFn;
-  state: ReserveState;
+  requireComplete?: boolean;
   logger?: RuntimeLoggerLike;
 }
 
-/** Fetch, validate, and retain only the remotely advertised reserve model. */
-export async function refreshReserve(
+export interface RefreshedCodexCatalog {
+  parsed: ParsedCodexCatalog;
+  responseStatus: number;
+}
+
+export function reserveModelFromCatalog(parsed: ParsedCodexCatalog): CommonModelDefinition | undefined {
+  return parsed.models.find((model) => model.id === RESERVE_MODEL_ID);
+}
+
+/** Fetch and validate a Codex catalog, retaining all accepted remote rows. */
+export async function refreshCodexCatalog(
   options: ReserveRefreshOptions,
-): Promise<CommonModelDefinition | undefined> {
+): Promise<RefreshedCodexCatalog> {
   try {
     const request: CatalogFetchRequest = {
       accessToken: options.accessToken,
       ...(options.accountId ? { accountId: options.accountId } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
       fetchFn: options.fetchFn,
     };
     const result = await fetchCodexCatalog(request);
-    const parsed = parseCodexCatalog(result.catalog);
-    const changes = options.state.apply(parsed);
-    const reserve = parsed.models.find((model) => model.id === "gpt-reserve");
-    if (!reserve) {
-      logRuntimeEvent(options.logger, "refresh.skipped", { host: options.host, reason: "reserve-not-advertised" });
-      return undefined;
-    }
+    const parsed = parseCodexCatalog(result.catalog, { requireComplete: options.requireComplete });
+    const endpoint = new URL(result.catalog.endpoint).pathname;
     logRuntimeEvent(options.logger, "refresh.succeeded", {
       host: options.host,
-      endpoint: new URL(result.catalog.endpoint).pathname,
+      endpoint,
       responseStatus: result.responseStatus,
       remoteModelCount: result.catalog.models.length,
-      reserveDetected: true,
-      changedFields: changes.map((change) => change.field),
+      acceptedModelCount: parsed.models.length,
+      reserveDetected: Boolean(parsed.reserve),
     });
-    return reserve;
+    if (!parsed.reserve) {
+      logRuntimeEvent(options.logger, "refresh.skipped", {
+        host: options.host,
+        reason: "reserve-not-advertised",
+      });
+    }
+    return { parsed, responseStatus: result.responseStatus };
   } catch (error) {
-    options.state.recordFailure(error);
-    logRuntimeEvent(options.logger, "refresh.failed", { host: options.host, error: safeErrorMessage(error) });
+    logRuntimeEvent(options.logger, "refresh.failed", {
+      host: options.host,
+      error: safeErrorMessage(error),
+    });
     options.logger?.warn?.(`omp-codex-reserve: refresh unavailable (${safeErrorMessage(error)})`);
-    return undefined;
+    throw error;
   }
+}
+
+export function reserveUnavailable(message = "gpt-reserve is not available in the current Codex catalog"): CatalogUnavailableError {
+  return new CatalogUnavailableError(message);
 }

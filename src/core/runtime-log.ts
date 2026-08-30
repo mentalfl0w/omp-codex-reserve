@@ -1,6 +1,6 @@
 import { safeErrorMessage } from "./errors.ts";
 
-/** The host logger owns the destination and automatic file rotation policy. */
+/** Shared structured logger surface for host forwarding and file diagnostics. */
 export interface RuntimeLoggerLike {
   debug?(message: string, data?: unknown): void;
   warn?(message: string, data?: unknown): void;
@@ -24,7 +24,7 @@ function safeDetail(key: string, value: unknown): unknown {
   return "[redacted]";
 }
 
-function safeDetails(details: RuntimeLogDetails): Record<string, unknown> {
+export function sanitizeRuntimeDetails(details: RuntimeLogDetails): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(details)) {
     if (value !== undefined) result[key] = safeDetail(key, value);
@@ -40,7 +40,7 @@ export function logRuntimeEvent(
 ): void {
   if (!logger?.debug) return;
   try {
-    logger.debug(`omp-codex-reserve: ${event}`, safeDetails(details));
+    logger.debug(`omp-codex-reserve: ${event}`, sanitizeRuntimeDetails(details));
   } catch {
     // A host logger failure must never change model discovery behavior.
   }

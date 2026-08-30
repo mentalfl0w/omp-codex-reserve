@@ -1,14 +1,14 @@
-import { credentialAccountId } from "../core/account-id.ts";
-import { CatalogUnavailableError } from "../core/errors.ts";
-import { refreshReserve } from "../core/reserve-refresh.ts";
-import { logRuntimeEvent } from "../core/runtime-log.ts";
-import { ReserveState } from "../core/state.ts";
+import { extractChatGptAccountId } from "../core/account-id.ts";
+import { safeErrorMessage } from "../core/errors.ts";
+import { refreshCodexCatalog, reserveModelFromCatalog, type RefreshedCodexCatalog } from "../core/reserve-refresh.ts";
+import { logRuntimeEvent, type RuntimeLoggerLike } from "../core/runtime-log.ts";
 import type { FetchFn } from "../core/types.ts";
 import { isPiNativeProvider, wrapPiProviderWithReserve } from "./pi-native-provider.ts";
 import type { CommandContextLike, ExtensionApiLike } from "./types.ts";
 
 export interface PiAdapterOptions {
   fetchFn?: FetchFn;
+  logger?: RuntimeLoggerLike;
 }
 
 function nativeProviderFrom(context: CommandContextLike) {
@@ -16,41 +16,96 @@ function nativeProviderFrom(context: CommandContextLike) {
   return isPiNativeProvider(provider) ? provider : undefined;
 }
 
-export function installPiAdapter(
-  pi: ExtensionApiLike,
-  state: ReserveState,
-  options: PiAdapterOptions = {},
-): void {
-  pi.on?.("session_start", async (_event, context) => {
+class PiReserveAdapter {
+  private readonly logger: RuntimeLoggerLike | undefined;
+  private sessionRefresh: Promise<void> | undefined;
+
+  constructor(
+    private readonly pi: ExtensionApiLike,
+    private readonly options: PiAdapterOptions,
+  ) {
+    this.logger = options.logger ?? pi.logger;
+  }
+
+  install(): void {
+    this.pi.on?.("session_start", (_event, context) => this.refreshSession(context));
+  }
+
+  private refreshSession(context: CommandContextLike): Promise<void> {
+    if (!this.sessionRefresh) {
+      const refresh = this.runSessionRefresh(context).finally(() => {
+        if (this.sessionRefresh === refresh) this.sessionRefresh = undefined;
+      });
+      this.sessionRefresh = refresh;
+    }
+    return this.sessionRefresh;
+  }
+
+  private async runSessionRefresh(context: CommandContextLike): Promise<void> {
     const base = nativeProviderFrom(context);
     if (!base) {
-      logRuntimeEvent(pi.logger, "refresh.skipped", { host: "pi", reason: "native-provider-unavailable" });
+      logRuntimeEvent(this.logger, "refresh.skipped", {
+        host: "pi",
+        reason: "native-provider-unavailable",
+      });
       return;
     }
 
-    const accessToken = (await context.modelRegistry?.getApiKeyForProvider?.("openai-codex"))?.trim();
-    logRuntimeEvent(pi.logger, "refresh.started", { host: "pi", credentialPresent: Boolean(accessToken) });
-    if (!accessToken) {
-      const error = new CatalogUnavailableError("OpenAI Codex OAuth credential is unavailable");
-      state.recordFailure(error);
-      logRuntimeEvent(pi.logger, "refresh.skipped", { host: "pi", reason: "credential-unavailable" });
-      return;
-    }
-
-    const reserve = await refreshReserve({
+    const registry = context.modelRegistry;
+    const getApiKey = registry?.getApiKeyForProvider;
+    const accessToken = typeof getApiKey === "function"
+      ? (await getApiKey.call(registry, "openai-codex"))?.trim()
+      : undefined;
+    logRuntimeEvent(this.logger, "refresh.started", {
       host: "pi",
-      accessToken,
-      accountId: credentialAccountId({ access: accessToken }),
-      fetchFn: options.fetchFn,
-      state,
-      logger: pi.logger,
-    });
-    if (!reserve) return;
-
-    pi.registerProvider(wrapPiProviderWithReserve(base, reserve));
-    logRuntimeEvent(pi.logger, "refresh.applied", {
-      host: "pi",
+      credentialPresent: Boolean(accessToken),
       nativeModelCount: base.getModels().length,
     });
-  });
+    if (!accessToken) {
+      logRuntimeEvent(this.logger, "refresh.skipped", {
+        host: "pi",
+        reason: "credential-unavailable",
+      });
+      return;
+    }
+
+    let parsed: RefreshedCodexCatalog;
+    try {
+      parsed = await refreshCodexCatalog({
+        host: "pi",
+        accessToken,
+        accountId: extractChatGptAccountId(accessToken),
+        fetchFn: this.options.fetchFn,
+        logger: this.logger,
+      });
+    } catch (error) {
+      logRuntimeEvent(this.logger, "refresh.skipped", {
+        host: "pi",
+        reason: "catalog-unavailable",
+        error: safeErrorMessage(error),
+      });
+      return;
+    }
+    const reserve = reserveModelFromCatalog(parsed.parsed);
+    if (!reserve) {
+      logRuntimeEvent(this.logger, "refresh.skipped", {
+        host: "pi",
+        reason: "reserve-not-advertised",
+      });
+      return;
+    }
+
+    this.pi.registerProvider(wrapPiProviderWithReserve(base, reserve));
+    logRuntimeEvent(this.logger, "refresh.applied", {
+      host: "pi",
+      nativeModelCount: base.getModels().filter((model) => model.id !== "gpt-reserve").length,
+    });
+  }
+}
+
+export function installPiAdapter(
+  pi: ExtensionApiLike,
+  options: PiAdapterOptions = {},
+): void {
+  new PiReserveAdapter(pi, options).install();
 }

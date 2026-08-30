@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { CatalogMetadataError } from "../src/core/errors.ts";
 import { parseCodexCatalog } from "../src/core/catalog-parser.ts";
 import { catalog, hiddenModel, reserveModel, visibleModel } from "./fixtures.ts";
 
@@ -74,7 +73,7 @@ describe("parseCodexCatalog", () => {
       { input_modalities: undefined },
       { supported_reasoning_levels: undefined, default_reasoning_level: undefined },
     ]) {
-      expect(() => parseCodexCatalog(catalog([visibleModel(override)]))).toThrow(CatalogMetadataError);
+      expect(() => parseCodexCatalog(catalog([visibleModel(override)]))).toThrow("no usable visible models");
     }
   });
 
@@ -84,9 +83,18 @@ describe("parseCodexCatalog", () => {
     expect(parsed.models).toHaveLength(1);
   });
 
-  test("requires explicit modalities instead of defaulting them", () => {
+  test("skips models with unsupported input modalities instead of failing the whole catalog", () => {
     expect(() => parseCodexCatalog(catalog([visibleModel({ input_modalities: ["audio"] })]))).toThrow(
-      "unsupported input modality",
+      "no usable visible models",
     );
+  });
+
+  test("fails the complete-catalog path when a visible row is malformed", () => {
+    expect(() =>
+      parseCodexCatalog(
+        catalog([visibleModel({ input_modalities: ["audio"] }), reserveModel()]),
+        { requireComplete: true },
+      ),
+    ).toThrow("unsupported input modality");
   });
 });
