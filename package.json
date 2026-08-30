@@ -1,6 +1,6 @@
 {
   "name": "omp-codex-reserve",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Expose the authenticated gpt-reserve Codex model in oh-my-pi (OMP) and Pi without replacing native model behavior.",
   "license": "MIT",
   "author": "mentalfl0w",
