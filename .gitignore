@@ -31,6 +31,9 @@ yarn-debug.log*
 yarn-error.log*
 *.tgz
 
+# Local Bun dependency lockfile
+bun.lock
+
 # Local credentials and test output
 .env
 .env.*
